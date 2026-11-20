@@ -1,0 +1,148 @@
+name: Reusable Go CI
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: Module directory relative to the repository root.
+        required: false
+        type: string
+        default: .
+      go-version-file:
+        description: go.mod or go.work path relative to working-directory.
+        required: false
+        type: string
+        default: go.mod
+      race:
+        description: Enable Go race detection.
+        required: false
+        type: boolean
+        default: true
+      test-timeout:
+        description: Go test timeout for each package test binary.
+        required: false
+        type: string
+        default: 3m
+      golangci-lint-version:
+        description: Exact golangci-lint version to install.
+        required: false
+        type: string
+        default: v2.15.0
+      coverage-artifact-name:
+        description: Artifact name for the coverage profile.
+        required: false
+        type: string
+        default: go-coverage
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Code Quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: ${{ inputs.working-directory }}/${{ inputs.go-version-file }}
+          cache: false
+
+      - name: Check formatting
+        run: |
+          go fmt ./...
+          git diff --exit-code -- '*.go'
+
+      - name: Go vet
+        run: go vet ./...
+
+      - name: Go build
+        run: go build ./...
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: ${{ inputs.golangci-lint-version }}
+          working-directory: ${{ inputs.working-directory }}
+          skip-cache: true
+
+  unit-tests:
+    name: Unit Tests and Coverage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: ${{ inputs.working-directory }}/${{ inputs.go-version-file }}
+          cache: false
+
+      - name: Test with coverage
+        env:
+          ENABLE_RACE: ${{ inputs.race }}
+          TEST_TIMEOUT: ${{ inputs.test-timeout }}
+        run: >-
+          go test
+          -race="$ENABLE_RACE"
+          -count=1
+          -timeout="$TEST_TIMEOUT"
+          -covermode=atomic
+          -coverpkg=./...
+          -coverprofile=coverage.out
+          ./...
+
+      - name: Summarize coverage
+        if: >-
+          !cancelled() &&
+          hashFiles(format('{0}/coverage.out', inputs.working-directory)) != ''
+        run: go tool cover -func=coverage.out
+
+      - name: Upload coverage
+        if: >-
+          !cancelled() &&
+          hashFiles(format('{0}/coverage.out', inputs.working-directory)) != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ inputs.coverage-artifact-name }}
+          path: ${{ inputs.working-directory }}/coverage.out
+          retention-days: 7
+          if-no-files-found: error
+
+  dependency-security:
+    name: Dependency Security
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: ${{ inputs.working-directory }}/${{ inputs.go-version-file }}
+          cache: false
+
+      - name: Check dependencies
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...

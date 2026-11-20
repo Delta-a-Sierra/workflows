@@ -1,0 +1,24 @@
+name: Go CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: Go CI
+    uses: Delta-a-Sierra/workflows/.github/workflows/go-ci.yml@<FULL_COMMIT_SHA>
+    with:
+      working-directory: .
+      go-version-file: go.mod
+      race: true
+      test-timeout: 3m

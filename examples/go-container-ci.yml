@@ -1,0 +1,49 @@
+name: Go and Container CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: Go CI
+    uses: Delta-a-Sierra/workflows/.github/workflows/go-ci.yml@<FULL_COMMIT_SHA>
+
+  container:
+    name: Container Build and Scan
+    uses: Delta-a-Sierra/workflows/.github/workflows/container-build-scan.yml@<FULL_COMMIT_SHA>
+    with:
+      image-tag: my-service:local
+      upload-image: true
+      image-artifact-name: container-image
+
+  smoke-test:
+    name: Application Smoke Test
+    needs: container
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Download scanned image
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: ${{ needs.container.outputs.image-artifact-name }}
+          path: ${{ runner.temp }}/container-image
+
+      - name: Load image
+        env:
+          IMAGE_TAG: ${{ needs.container.outputs.image-tag }}
+        run: docker load --input "$RUNNER_TEMP/container-image/image.tar"
+
+      - name: Run project-specific smoke test
+        env:
+          IMAGE_TAG: ${{ needs.container.outputs.image-tag }}
+        run: echo "Replace with this project's smoke-test command for $IMAGE_TAG"

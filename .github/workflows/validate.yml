@@ -1,0 +1,98 @@
+name: Validate workflow hub
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Workflow Lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Install and run actionlint
+        run: |
+          set -euo pipefail
+          go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.11 \
+            .github/workflows/*.yml examples/*.yml
+
+  go-ci:
+    name: Go CI Integration
+    uses: ./.github/workflows/go-ci.yml
+    with:
+      working-directory: tests/fixtures/go
+      coverage-artifact-name: hub-go-coverage
+
+  container:
+    name: Container Workflow Integration
+    uses: ./.github/workflows/container-build-scan.yml
+    with:
+      context: tests/fixtures/container
+      dockerfile: tests/fixtures/container/Dockerfile
+      image-tag: hub-fixture:local
+      upload-image: true
+      image-artifact-name: hub-container-image
+      scan-artifact-name: hub-trivy-report
+
+  container-default:
+    name: Container Workflow Without Image Export
+    uses: ./.github/workflows/container-build-scan.yml
+    with:
+      context: tests/fixtures/container
+      dockerfile: tests/fixtures/container/Dockerfile
+      image-tag: hub-fixture-no-export:local
+      scan-artifact-name: hub-trivy-report-no-export
+
+  verify-container:
+    name: Verify Exported Image
+    needs: container
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Download image
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: ${{ needs.container.outputs.image-artifact-name }}
+          path: ${{ runner.temp }}/container-image
+
+      - name: Load and inspect scanned image
+        env:
+          IMAGE_TAG: ${{ needs.container.outputs.image-tag }}
+        run: |
+          set -euo pipefail
+          docker load --input "$RUNNER_TEMP/container-image/image.tar"
+          container=$(docker create "$IMAGE_TAG" /message)
+          trap 'docker rm "$container" >/dev/null' EXIT
+          docker cp "$container:/message" "$RUNNER_TEMP/message"
+          [[ "$(cat "$RUNNER_TEMP/message")" == "workflow hub fixture" ]]
+
+  verify-container-default:
+    name: Verify Image Export Is Disabled By Default
+    needs: container-default
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check image artifact output is empty
+        env:
+          IMAGE_ARTIFACT: ${{ needs.container-default.outputs.image-artifact-name }}
+        run: test -z "$IMAGE_ARTIFACT"
